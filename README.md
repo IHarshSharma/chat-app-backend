@@ -1,102 +1,118 @@
 # Chat App Backend
 
-Real-time chat application backend built with Spring Boot 3.2, WebSocket (STOMP), JWT authentication, and PostgreSQL.
+Real-time chat backend built with Spring Boot 3.2, STOMP over WebSocket, JWT auth, and PostgreSQL. Runs on port 8081.
 
-## Prerequisites
+## Stack
 
-- Java 17+
-- PostgreSQL 13+
-- Maven 3.8+
+- Java 17
+- Spring Boot 3.2
+- Spring WebSocket (STOMP) + SockJS
+- Spring Security + JJWT 0.11.5
+- Spring Data JPA + PostgreSQL
+- Lombok
 
 ## Setup
 
-### 1. Create the PostgreSQL database
+### 1. Create the database
 
 ```bash
 createdb chatapp
 ```
 
-Or using psql:
+### 2. Edit `application.properties`
 
-```sql
-CREATE DATABASE chatapp;
+```properties
+spring.datasource.url=jdbc:postgresql://localhost:5432/chatapp
+spring.datasource.username=YOUR_PG_USER
+spring.datasource.password=YOUR_PG_PASSWORD
+
+app.jwt.secret=change_this_to_something_long_and_random
+app.jwt.expiration-ms=86400000
 ```
 
-The datasource defaults to your system username with no password (standard Homebrew PostgreSQL setup). Update `application.properties` if your PostgreSQL user or password differs.
-
-### 2. Build and run
+### 3. Run
 
 ```bash
-cd chat-app-backend
+export JAVA_HOME=/path/to/java17
 mvn clean spring-boot:run
 ```
 
-The server starts on **http://localhost:8081**.
+Server starts on `http://localhost:8081`. Hibernate creates tables automatically on first run.
 
----
-
-## API Reference
+## REST API
 
 ### Auth
 
-| Method | Endpoint            | Body                              | Description       |
-|--------|---------------------|-----------------------------------|-------------------|
-| POST   | `/api/auth/register` | `{name, email, password}`        | Register new user |
-| POST   | `/api/auth/login`    | `{email, password}`              | Login, get JWT    |
+```
+POST /api/auth/register   { name, email, password }
+POST /api/auth/login      { email, password }
+```
 
-Both return `{ "token": "<jwt>" }`.
+Returns `{ token, userId, name, email }`.
 
 ### Users
 
 All endpoints require `Authorization: Bearer <token>`.
 
-| Method | Endpoint         | Description                        |
-|--------|------------------|------------------------------------|
-| GET    | `/api/users`     | List all users except current user |
-| GET    | `/api/users/{id}`| Get user by ID                     |
+```
+GET /api/users          all users except the caller
+GET /api/users/{id}     single user
+```
 
 ### Conversations
 
-| Method | Endpoint                       | Description                           |
-|--------|--------------------------------|---------------------------------------|
-| GET    | `/api/conversations`           | List conversations for current user   |
-| POST   | `/api/conversations/{userId}`  | Start or get conversation with userId |
-| GET    | `/api/messages/{conversationId}` | Get messages in a conversation      |
+```
+GET  /api/conversations             accepted conversations for current user
+POST /api/conversations/{userId}    send a DM request to userId
+GET  /api/conversations/pending     incoming DM requests waiting for a response
+PUT  /api/conversations/{id}/accept accept a DM request
+PUT  /api/conversations/{id}/reject reject a DM request
+GET  /api/messages/{conversationId} message history (accepted convs only)
+```
 
----
+New conversations start as `PENDING`. The recipient sees them under `/pending` and can accept or reject. Only accepted conversations appear in the main list.
 
 ## WebSocket (STOMP)
 
-### Connect
+Connect to `ws://localhost:8081/ws`. Send JWT in the CONNECT frame:
 
 ```
-ws://localhost:8081/ws
+CONNECT
+Authorization:Bearer <token>
 ```
 
-Send `Authorization: Bearer <token>` header in the CONNECT frame.
+### Subscribe
 
-### Subscriptions
-
-| Topic                            | Description                        |
-|----------------------------------|------------------------------------|
-| `/topic/messages/{convId}`       | New messages / read receipts       |
-| `/topic/typing/{convId}`         | Typing indicators                  |
-| `/topic/status/{userId}`         | User status updates                |
+```
+/topic/messages/{conversationId}   incoming messages + read receipts
+/topic/typing/{conversationId}     typing indicators
+/topic/status/{userId}             online/offline status
+```
 
 ### Send
 
-| Destination       | Payload (ChatNotification)         | Description         |
-|-------------------|------------------------------------|---------------------|
-| `/app/chat.send`  | `{conversationId, content}`        | Send a message      |
-| `/app/chat.typing`| `{conversationId}`                 | Broadcast typing    |
-| `/app/chat.read`  | `{conversationId}`                 | Mark messages read  |
+```
+/app/chat.send     { type:"MESSAGE", conversationId, content }
+/app/chat.typing   { type:"TYPING",  conversationId }
+/app/chat.read     { type:"READ",    conversationId }
+```
 
----
+## Package layout
 
-## Data Model
+```
+com.chatapp
+├── config/       SecurityConfig, WebSocketConfig, CorsConfig
+├── controller/   AuthController, UserController, ChatController
+├── service/      AuthService, UserService, ChatService
+├── repository/   UserRepository, ConversationRepository, MessageRepository
+├── model/        User, Conversation, Message
+├── dto/          LoginRequest, RegisterRequest, UserDTO, ConversationDTO, MessageDTO, ChatNotification
+└── security/     JwtTokenProvider, JwtAuthenticationFilter, UserDetailsServiceImpl
+```
 
-- **User**: id, name, email, password (BCrypt), status (ONLINE/OFFLINE), createdAt
-- **Conversation**: id, user1, user2, createdAt
-- **Message**: id, conversation, sender, content, sentAt, isRead
+## Notes
 
-Tables are auto-created/updated by Hibernate on startup (`ddl-auto=update`).
+- WebSocket connections are authenticated at the STOMP CONNECT frame level, not just HTTP.
+- Conversation status: `PENDING` → `ACCEPTED` or `REJECTED`. Users can only exchange messages in accepted conversations.
+- Passwords are BCrypt-hashed. JWT is HS256 with a configurable expiry (default 24h).
+- CORS is open by default — lock it down before deploying anywhere public.
